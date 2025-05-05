@@ -22,6 +22,7 @@ from azure.cli.core.azclierror import (
 )
 from azure.cli.core.commands import AzCliCommand
 from azure.cli.core.profiles import ResourceType
+from azure.cli.core.util import get_file_json
 from azure.cli.core.util import (
     read_file_content,
     sdk_no_wait,
@@ -51,6 +52,7 @@ AgentPool = TypeVar("AgentPool")
 AgentPoolsOperations = TypeVar("AgentPoolsOperations")
 PortRange = TypeVar("PortRange")
 IPTag = TypeVar("IPTag")
+AgentPoolLocalDNSProfile = TypeVar("AgentPoolLocalDNSProfile")
 
 
 # pylint: disable=too-few-public-methods
@@ -516,6 +518,37 @@ class AKSPreviewAgentPoolContext(AKSAgentPoolContext):
             ):
                 enable_artifact_streaming = self.agentpool.artifact_streaming_profile.enabled
         return enable_artifact_streaming
+    
+    def get_localdns_profile(self) -> Union[Dict, AgentPoolLocalDNSProfile, None]:
+        """Obtain the value of localdns_config.
+        :return: dictionary, AgentPoolLocalDNSProfile or None
+        """
+        # read the original value passed by the command
+        localdns_profile = None
+        localdns_profile_file_path = self.raw_param.get("localdns_config")
+        # validate user input
+        if localdns_profile_file_path:
+            if not os.path.isfile(localdns_profile_file_path):
+                raise InvalidArgumentValueError(
+                    "{} is not valid file, or not accessable.".format(
+                        localdns_profile_file_path
+                    )
+                )
+            localdns_profile = get_file_json(localdns_profile_file_path)
+            if not isinstance(localdns_profile, dict):
+                raise InvalidArgumentValueError(
+                    "Error reading localdns config from {}. "
+                    "Please see https://aka.ms/aks/localdns for correct format.".format(
+                        localdns_profile_file_path
+                    )
+                )
+
+        # In create mode, try to read the property value corresponding to the parameter from the `agentpool` object
+        if self.decorator_mode == DecoratorMode.CREATE:
+            if self.agentpool and self.agentpool.localdns_config is not None:
+                localdns_profile = self.agentpool.localdns_config
+
+        return localdns_profile
 
     def get_pod_ip_allocation_mode(self: bool = False) -> Union[str, None]:
         """Get the value of pod_ip_allocation_mode.
@@ -891,6 +924,13 @@ class AKSPreviewAgentPoolAddDecorator(AKSAgentPoolAddDecorator):
                 )
             agentpool.artifact_streaming_profile.enabled = True
         return agentpool
+    
+    def set_up_localdns_profile(self, agentpool: AgentPool) -> AgentPool:
+        """Set up localdns profile for the AgentPool object."""
+        self._ensure_agentpool(agentpool)
+
+        agentpool.localdnsprofile = self.context.get_localdns_profile()
+        return agentpool
 
     def set_up_ssh_access(self, agentpool: AgentPool) -> AgentPool:
         self._ensure_agentpool(agentpool)
@@ -1025,6 +1065,8 @@ class AKSPreviewAgentPoolAddDecorator(AKSAgentPoolAddDecorator):
         agentpool = self.set_up_init_taints(agentpool)
         # set up artifact streaming
         agentpool = self.set_up_artifact_streaming(agentpool)
+        # set up localdns profile
+        agentpool = self.set_up_localdns_profile(agentpool)
         # set up skip_gpu_driver_install
         agentpool = self.set_up_skip_gpu_driver_install(agentpool)
         # set up driver_type
@@ -1147,6 +1189,15 @@ class AKSPreviewAgentPoolUpdateDecorator(AKSAgentPoolUpdateDecorator):
             if agentpool.artifact_streaming_profile is None:
                 agentpool.artifact_streaming_profile = self.models.AgentPoolArtifactStreamingProfile()  # pylint: disable=no-member
             agentpool.artifact_streaming_profile.enabled = True
+        return agentpool
+    
+    def update_localdns_profile(self, agentpool: AgentPool) -> AgentPool:
+        """Update localdns profile for the AgentPool object.
+        :return: the AgentPool object
+        """
+        self._ensure_agentpool(agentpool)
+
+        agentpool.localdnsprofile = self.context.get_localdns_profile()
         return agentpool
 
     def update_os_sku(self, agentpool: AgentPool) -> AgentPool:
